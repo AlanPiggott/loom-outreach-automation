@@ -4,12 +4,19 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
+import cloudflareStream from './cloudflare-stream.js';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
 const port = 3000;
+
+// In-memory storage for recording metadata (in production, use a database)
+const recordingsMetadata = new Map();
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
@@ -108,16 +115,37 @@ app.post('/api/record', async (req, res) => {
             console.error('Recording error:', data.toString());
         });
 
-        recordingProcess.on('close', (code) => {
+        recordingProcess.on('close', async (code) => {
             if (code === 0) {
                 // Find the generated video file
                 const recordingPath = path.join(__dirname, 'recordings', `final-${recordingId}.mp4`);
+                
+                // Store initial metadata
+                const metadata = {
+                    recordingId,
+                    localPath: recordingPath,
+                    videoUrl: `/recordings/final-${recordingId}.mp4`,
+                    websites,
+                    created: new Date(),
+                    cloudflareStatus: 'pending',
+                    cloudflareVideoId: null,
+                    cloudflareUrls: null
+                };
+                recordingsMetadata.set(recordingId.toString(), metadata);
+                
+                // Send immediate response
                 res.json({
                     success: true,
                     recordingId,
                     videoUrl: `/recordings/final-${recordingId}.mp4`,
-                    message: 'Recording completed successfully'
+                    message: 'Recording completed successfully',
+                    cloudflareStatus: 'pending'
                 });
+                
+                // Auto-upload to Cloudflare if enabled
+                if (process.env.CLOUDFLARE_AUTO_UPLOAD === 'true') {
+                    uploadToCloudflare(recordingId, recordingPath);
+                }
             } else {
                 res.status(500).json({
                     error: 'Recording failed',
@@ -132,6 +160,104 @@ app.post('/api/record', async (req, res) => {
     }
 });
 
+// Helper function to upload to Cloudflare
+async function uploadToCloudflare(recordingId, filePath) {
+    try {
+        const metadata = recordingsMetadata.get(recordingId.toString());
+        if (!metadata) return;
+        
+        console.log(`🚀 Starting Cloudflare upload for recording ${recordingId}`);
+        metadata.cloudflareStatus = 'uploading';
+        
+        // Track upload progress
+        cloudflareStream.on('progress', (data) => {
+            metadata.uploadProgress = data.progress;
+            console.log(`Upload progress: ${data.progress}%`);
+        });
+        
+        // Upload to Cloudflare
+        const uploadResult = await cloudflareStream.uploadVideo(filePath, {
+            name: `Recording ${recordingId} - ${metadata.websites.length} websites`
+        });
+        
+        metadata.cloudflareStatus = 'processing';
+        metadata.cloudflareVideoId = uploadResult.videoId;
+        metadata.cloudflareUrls = {
+            playback: uploadResult.playbackUrl,
+            embed: uploadResult.embedUrl,
+            thumbnail: uploadResult.thumbnail,
+            dash: uploadResult.dashUrl,
+            hls: uploadResult.hlsUrl
+        };
+        
+        // Wait for video to be ready
+        cloudflareStream.on('status', (status) => {
+            metadata.processingStatus = status;
+        });
+        
+        const readyDetails = await cloudflareStream.waitForVideoReady(uploadResult.videoId);
+        
+        metadata.cloudflareStatus = 'ready';
+        metadata.cloudflareReady = true;
+        metadata.cloudflareDuration = readyDetails.duration;
+        
+        console.log(`✅ Cloudflare upload complete for recording ${recordingId}`);
+        
+    } catch (error) {
+        console.error(`Failed to upload recording ${recordingId} to Cloudflare:`, error);
+        const metadata = recordingsMetadata.get(recordingId.toString());
+        if (metadata) {
+            metadata.cloudflareStatus = 'failed';
+            metadata.cloudflareError = error.message;
+        }
+    }
+}
+
+// Get recording status endpoint (includes Cloudflare status)
+app.get('/api/recordings/:id/status', (req, res) => {
+    const { id } = req.params;
+    const metadata = recordingsMetadata.get(id);
+    
+    if (!metadata) {
+        return res.status(404).json({ error: 'Recording not found' });
+    }
+    
+    res.json({
+        recordingId: metadata.recordingId,
+        cloudflareStatus: metadata.cloudflareStatus,
+        uploadProgress: metadata.uploadProgress || 0,
+        processingStatus: metadata.processingStatus,
+        cloudflareReady: metadata.cloudflareReady || false,
+        cloudflareVideoId: metadata.cloudflareVideoId,
+        cloudflareUrls: metadata.cloudflareUrls,
+        cloudflareError: metadata.cloudflareError
+    });
+});
+
+// Get Cloudflare embed code
+app.get('/api/recordings/:id/embed', (req, res) => {
+    const { id } = req.params;
+    const metadata = recordingsMetadata.get(id);
+    
+    if (!metadata || !metadata.cloudflareVideoId) {
+        return res.status(404).json({ error: 'Recording not found or not uploaded to Cloudflare' });
+    }
+    
+    const embedCode = cloudflareStream.generateEmbedCode(metadata.cloudflareVideoId, {
+        width: req.query.width || '100%',
+        height: req.query.height || '100%',
+        autoplay: req.query.autoplay === 'true',
+        muted: req.query.muted === 'true',
+        loop: req.query.loop === 'true'
+    });
+    
+    res.json({
+        embedCode,
+        videoId: metadata.cloudflareVideoId,
+        embedUrl: metadata.cloudflareUrls.embed
+    });
+});
+
 // Get recordings list endpoint
 app.get('/api/recordings', async (req, res) => {
     try {
@@ -144,12 +270,17 @@ app.get('/api/recordings', async (req, res) => {
                 .map(async (file) => {
                     const stats = await fs.stat(path.join(recordingsDir, file));
                     const id = file.replace('final-', '').replace('.mp4', '');
+                    const metadata = recordingsMetadata.get(id);
+                    
                     return {
                         id,
                         filename: file,
                         videoUrl: `/recordings/${file}`,
                         size: stats.size,
-                        created: stats.birthtime
+                        created: stats.birthtime,
+                        cloudflareStatus: metadata?.cloudflareStatus || 'none',
+                        cloudflareReady: metadata?.cloudflareReady || false,
+                        cloudflareUrls: metadata?.cloudflareUrls || null
                     };
                 })
         );

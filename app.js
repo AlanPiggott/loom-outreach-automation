@@ -28,8 +28,17 @@ const App = () => {
                         url: 'Recording ' + rec.id,
                         duration: 30, // Default since we don't store this
                         timestamp: new Date(rec.created).toLocaleString(),
-                        videoUrl: rec.videoUrl
+                        videoUrl: rec.videoUrl,
+                        cloudflareStatus: rec.cloudflareStatus || 'none',
+                        cloudflareUrls: rec.cloudflareUrls || null
                     })));
+                    
+                    // Monitor any recordings that are uploading
+                    data.forEach(rec => {
+                        if (rec.cloudflareStatus === 'pending' || rec.cloudflareStatus === 'uploading' || rec.cloudflareStatus === 'processing') {
+                            monitorCloudflareUpload(rec.id);
+                        }
+                    });
                 }
             } catch (error) {
                 console.error('Failed to load recordings:', error);
@@ -37,6 +46,41 @@ const App = () => {
         };
         loadRecordings();
     }, []);
+    
+    // Monitor Cloudflare upload status
+    const monitorCloudflareUpload = async (recordingId) => {
+        const checkStatus = async () => {
+            try {
+                const response = await fetch(`http://localhost:3000/api/recordings/${recordingId}/status`);
+                if (response.ok) {
+                    const status = await response.json();
+                    
+                    // Update recording status in the list
+                    setRecordings(prevRecordings => 
+                        prevRecordings.map(rec => 
+                            rec.id === recordingId 
+                                ? { 
+                                    ...rec, 
+                                    cloudflareStatus: status.cloudflareStatus,
+                                    cloudflareUrls: status.cloudflareUrls,
+                                    uploadProgress: status.uploadProgress
+                                  }
+                                : rec
+                        )
+                    );
+                    
+                    // Continue monitoring if not yet ready
+                    if (status.cloudflareStatus !== 'ready' && status.cloudflareStatus !== 'failed') {
+                        setTimeout(() => checkStatus(), 2000);
+                    }
+                }
+            } catch (error) {
+                console.error('Error checking upload status:', error);
+            }
+        };
+        
+        checkStatus();
+    };
 
     // Handle file upload
     const handleFileUpload = async (event) => {
@@ -163,9 +207,16 @@ const App = () => {
                 url: `${validWebsites.length} websites`,
                 duration: totalDuration,
                 timestamp: new Date().toLocaleString(),
-                videoUrl: result.videoUrl
+                videoUrl: result.videoUrl,
+                cloudflareStatus: 'pending',
+                cloudflareUrls: null
             };
             setRecordings([newRecording, ...recordings]);
+            
+            // Start monitoring Cloudflare upload status
+            if (result.cloudflareStatus === 'pending') {
+                monitorCloudflareUpload(result.recordingId);
+            }
             
             // Automatically show preview of the completed recording
             setPreviewVideo(`http://localhost:3000${result.videoUrl}`);
@@ -578,24 +629,71 @@ const App = () => {
                                     {recordings.map((recording) => (
                                         <div key={recording.id} className="bg-gray-800/50 rounded-lg p-4 hover:bg-gray-800/70 transition-colors">
                                             <div className="flex items-center justify-between">
-                                                <div>
-                                                    <p className="font-medium text-sm truncate max-w-[200px]">{recording.url}</p>
+                                                <div className="flex-1">
+                                                    <div className="flex items-center gap-2">
+                                                        <p className="font-medium text-sm truncate max-w-[200px]">{recording.url}</p>
+                                                        {/* Cloudflare Status Badge */}
+                                                        {recording.cloudflareStatus && recording.cloudflareStatus !== 'none' && (
+                                                            <span className={`px-2 py-0.5 text-xs rounded-full font-medium ${
+                                                                recording.cloudflareStatus === 'ready' 
+                                                                    ? 'bg-green-500/20 text-green-400'
+                                                                    : recording.cloudflareStatus === 'failed'
+                                                                    ? 'bg-red-500/20 text-red-400'
+                                                                    : recording.cloudflareStatus === 'uploading'
+                                                                    ? 'bg-blue-500/20 text-blue-400'
+                                                                    : 'bg-yellow-500/20 text-yellow-400'
+                                                            }`}>
+                                                                {recording.cloudflareStatus === 'ready' && '✓ Stream Ready'}
+                                                                {recording.cloudflareStatus === 'uploading' && `Uploading ${recording.uploadProgress || 0}%`}
+                                                                {recording.cloudflareStatus === 'processing' && 'Processing...'}
+                                                                {recording.cloudflareStatus === 'pending' && 'Queued'}
+                                                                {recording.cloudflareStatus === 'failed' && 'Upload Failed'}
+                                                            </span>
+                                                        )}
+                                                    </div>
                                                     <p className="text-xs text-gray-500">{recording.duration}s • {recording.timestamp}</p>
                                                 </div>
-                                                <div className="flex gap-2">
+                                                <div className="flex gap-1">
+                                                    {/* Play button - use Cloudflare if ready */}
                                                     <button 
-                                                        onClick={() => setPreviewVideo(`http://localhost:3000${recording.videoUrl}`)}
+                                                        onClick={() => {
+                                                            if (recording.cloudflareStatus === 'ready' && recording.cloudflareUrls) {
+                                                                setPreviewVideo(recording.cloudflareUrls.embed);
+                                                            } else {
+                                                                setPreviewVideo(`http://localhost:3000${recording.videoUrl}`);
+                                                            }
+                                                        }}
                                                         className="p-2 text-gray-400 hover:text-white transition-colors"
+                                                        title="Play video"
                                                     >
                                                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
                                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                                         </svg>
                                                     </button>
+                                                    
+                                                    {/* Share button - only if Cloudflare ready */}
+                                                    {recording.cloudflareStatus === 'ready' && recording.cloudflareUrls && (
+                                                        <button
+                                                            onClick={() => {
+                                                                navigator.clipboard.writeText(recording.cloudflareUrls.playback);
+                                                                alert('Share link copied to clipboard!');
+                                                            }}
+                                                            className="p-2 text-gray-400 hover:text-indigo-400 transition-colors"
+                                                            title="Copy share link"
+                                                        >
+                                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m9.632 4.268C18.114 15.938 18 16.482 18 17c0 .482.114.938.316 1.342m0-2.684a3 3 0 110 2.684M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                                            </svg>
+                                                        </button>
+                                                    )}
+                                                    
+                                                    {/* Download button */}
                                                     <a 
                                                         href={`http://localhost:3000${recording.videoUrl}`}
                                                         download={`recording-${recording.id}.mp4`}
                                                         className="p-2 text-gray-400 hover:text-indigo-400 transition-colors block"
+                                                        title="Download video"
                                                     >
                                                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
@@ -634,29 +732,47 @@ const App = () => {
                             </button>
                         </div>
                         <div className="relative bg-black">
-                            <video
-                                src={previewVideo}
-                                controls
-                                autoPlay
-                                className="w-full h-auto max-h-[70vh]"
-                                onEnded={() => setPreviewVideo(null)}
-                            >
-                                Your browser does not support the video tag.
-                            </video>
+                            {previewVideo.startsWith('http://localhost') ? (
+                                <video
+                                    src={previewVideo}
+                                    controls
+                                    autoPlay
+                                    className="w-full h-auto max-h-[70vh]"
+                                    onEnded={() => setPreviewVideo(null)}
+                                >
+                                    Your browser does not support the video tag.
+                                </video>
+                            ) : (
+                                <div className="relative" style={{ paddingBottom: '56.25%' }}>
+                                    <iframe
+                                        src={previewVideo}
+                                        className="absolute top-0 left-0 w-full h-full"
+                                        allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture;"
+                                        allowFullScreen={true}
+                                        style={{ border: 'none' }}
+                                    />
+                                </div>
+                            )}
                         </div>
                         <div className="p-4 bg-gray-900 border-t border-gray-800">
                             <div className="flex justify-between items-center">
-                                <p className="text-sm text-gray-400">Use spacebar to play/pause</p>
-                                <a
-                                    href={previewVideo}
-                                    download
-                                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium transition-colors flex items-center gap-2"
-                                >
-                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                                    </svg>
-                                    Download
-                                </a>
+                                <p className="text-sm text-gray-400">
+                                    {previewVideo.startsWith('http://localhost') 
+                                        ? 'Use spacebar to play/pause' 
+                                        : 'Streaming from Cloudflare'}
+                                </p>
+                                {previewVideo.startsWith('http://localhost') && (
+                                    <a
+                                        href={previewVideo}
+                                        download
+                                        className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium transition-colors flex items-center gap-2"
+                                    >
+                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                        </svg>
+                                        Download
+                                    </a>
+                                )}
                             </div>
                         </div>
                     </div>
