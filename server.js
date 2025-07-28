@@ -5,6 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
 import cloudflareStream from './cloudflare-stream.js';
+import csvHandler from './lib/csv-handler.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -30,6 +31,18 @@ const storage = multer.diskStorage({
     }
 });
 
+// Configure multer for CSV uploads
+const csvStorage = multer.diskStorage({
+    destination: async (req, file, cb) => {
+        const uploadDir = path.join(__dirname, 'uploads', 'csv');
+        await fs.mkdir(uploadDir, { recursive: true });
+        cb(null, uploadDir);
+    },
+    filename: (req, file, cb) => {
+        cb(null, `leads-${Date.now()}.csv`);
+    }
+});
+
 const upload = multer({ 
     storage,
     limits: { fileSize: 100 * 1024 * 1024 }, // 100MB limit
@@ -38,6 +51,18 @@ const upload = multer({
             cb(null, true);
         } else {
             cb(new Error('Only MP4 files are allowed'));
+        }
+    }
+});
+
+const uploadCSV = multer({
+    storage: csvStorage,
+    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit for CSV
+    fileFilter: (req, file, cb) => {
+        if (file.mimetype === 'text/csv' || file.mimetype === 'application/vnd.ms-excel' || file.originalname.endsWith('.csv')) {
+            cb(null, true);
+        } else {
+            cb(new Error('Only CSV files are allowed'));
         }
     }
 });
@@ -272,6 +297,9 @@ app.get('/api/recordings', async (req, res) => {
                     const id = file.replace('final-', '').replace('.mp4', '');
                     const metadata = recordingsMetadata.get(id);
                     
+                    // Check if any websites have lead metadata
+                    const hasLeadSource = metadata?.websites?.some(w => w.leadMetadata);
+                    
                     return {
                         id,
                         filename: file,
@@ -280,7 +308,9 @@ app.get('/api/recordings', async (req, res) => {
                         created: stats.birthtime,
                         cloudflareStatus: metadata?.cloudflareStatus || 'none',
                         cloudflareReady: metadata?.cloudflareReady || false,
-                        cloudflareUrls: metadata?.cloudflareUrls || null
+                        cloudflareUrls: metadata?.cloudflareUrls || null,
+                        hasLeadSource,
+                        websiteCount: metadata?.websites?.length || 0
                     };
                 })
         );
@@ -291,6 +321,139 @@ app.get('/api/recordings', async (req, res) => {
         console.error('Error listing recordings:', error);
         res.status(500).json({ error: 'Failed to list recordings' });
     }
+});
+
+// CSV Upload endpoint
+app.post('/api/upload-csv', uploadCSV.single('csv'), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: 'No CSV file uploaded' });
+        }
+
+        const leadListId = Date.now().toString();
+        
+        // Parse the CSV file
+        const parsedData = await csvHandler.parseCSV(req.file.path);
+        
+        // Analyze columns to find potential URL columns
+        const columnAnalysis = await csvHandler.analyzeColumns(parsedData);
+        
+        // Save initial lead list data
+        csvHandler.saveLeadList(leadListId, {
+            fileName: req.file.originalname,
+            filePath: req.file.path,
+            parsedData,
+            columnAnalysis
+        });
+
+        res.json({
+            success: true,
+            leadListId,
+            fileName: req.file.originalname,
+            rowCount: parsedData.rowCount,
+            headers: parsedData.headers,
+            columnAnalysis
+        });
+    } catch (error) {
+        console.error('CSV upload error:', error);
+        res.status(500).json({ error: 'Failed to process CSV file' });
+    }
+});
+
+// Select column and extract websites endpoint
+app.post('/api/lead-lists/:id/select-column', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { columnName } = req.body;
+        
+        if (!columnName) {
+            return res.status(400).json({ error: 'Column name is required' });
+        }
+        
+        const leadList = csvHandler.getLeadList(id);
+        if (!leadList) {
+            return res.status(404).json({ error: 'Lead list not found' });
+        }
+        
+        // Extract websites from the selected column
+        const extractedData = csvHandler.extractWebsites(leadList.parsedData, columnName);
+        
+        // Update lead list with selected column and extracted data
+        csvHandler.saveLeadList(id, {
+            ...leadList,
+            selectedColumn: columnName,
+            extractedData
+        });
+        
+        res.json({
+            success: true,
+            leadListId: id,
+            selectedColumn: columnName,
+            websiteCount: extractedData.successCount,
+            errorCount: extractedData.errorCount,
+            websites: extractedData.websites.slice(0, 10), // Return first 10 as preview
+            errors: extractedData.errors.slice(0, 5) // Return first 5 errors as preview
+        });
+    } catch (error) {
+        console.error('Column selection error:', error);
+        res.status(500).json({ error: 'Failed to process column selection' });
+    }
+});
+
+// Get lead list websites endpoint
+app.get('/api/lead-lists/:id/websites', (req, res) => {
+    const { id } = req.params;
+    const leadList = csvHandler.getLeadList(id);
+    
+    if (!leadList || !leadList.extractedData) {
+        return res.status(404).json({ error: 'Lead list not found or column not selected' });
+    }
+    
+    res.json({
+        leadListId: id,
+        fileName: leadList.fileName,
+        selectedColumn: leadList.selectedColumn,
+        websites: leadList.extractedData.websites,
+        totalCount: leadList.extractedData.successCount
+    });
+});
+
+// Get all lead lists endpoint
+app.get('/api/lead-lists', (req, res) => {
+    const leadLists = csvHandler.getAllLeadLists();
+    res.json(leadLists);
+});
+
+// Delete lead list endpoint
+app.delete('/api/lead-lists/:id', async (req, res) => {
+    const { id } = req.params;
+    const leadList = csvHandler.getLeadList(id);
+    
+    if (!leadList) {
+        return res.status(404).json({ error: 'Lead list not found' });
+    }
+    
+    try {
+        // Delete the CSV file
+        await fs.unlink(leadList.filePath);
+        
+        // Remove from memory
+        csvHandler.deleteLeadList(id);
+        
+        res.json({ success: true, message: 'Lead list deleted successfully' });
+    } catch (error) {
+        console.error('Error deleting lead list:', error);
+        res.status(500).json({ error: 'Failed to delete lead list' });
+    }
+});
+
+// Generate sample CSV endpoint
+app.get('/api/sample-csv', (req, res) => {
+    const csvContent = csvHandler.generateSampleCSV();
+    
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="sample-leads.csv"');
+    res.send(csvContent);
 });
 
 // Start server

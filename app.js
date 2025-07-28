@@ -15,6 +15,14 @@ const App = () => {
     const [uploadProgress, setUploadProgress] = useState(0);
     const [previewVideo, setPreviewVideo] = useState(null);
     const fileInputRef = useRef(null);
+    
+    // CSV Lead List state
+    const [leadLists, setLeadLists] = useState([]);
+    const [activeLeadList, setActiveLeadList] = useState(null);
+    const [showColumnSelector, setShowColumnSelector] = useState(false);
+    const [csvUploadData, setCsvUploadData] = useState(null);
+    const [csvUploading, setCsvUploading] = useState(false);
+    const csvFileInputRef = useRef(null);
 
     // Load existing recordings on mount
     useEffect(() => {
@@ -30,7 +38,9 @@ const App = () => {
                         timestamp: new Date(rec.created).toLocaleString(),
                         videoUrl: rec.videoUrl,
                         cloudflareStatus: rec.cloudflareStatus || 'none',
-                        cloudflareUrls: rec.cloudflareUrls || null
+                        cloudflareUrls: rec.cloudflareUrls || null,
+                        hasLeadSource: rec.hasLeadSource || false,
+                        websiteCount: rec.websiteCount || 0
                     })));
                     
                     // Monitor any recordings that are uploading
@@ -45,6 +55,7 @@ const App = () => {
             }
         };
         loadRecordings();
+        loadLeadLists();
     }, []);
     
     // Monitor Cloudflare upload status
@@ -230,6 +241,91 @@ const App = () => {
             setRecordingStatus('');
             setProgress(0);
         }
+    };
+
+    // CSV Upload handlers
+    const handleCSVUpload = async (event) => {
+        const file = event.target.files[0];
+        if (!file) return;
+        
+        setCsvUploading(true);
+        const formData = new FormData();
+        formData.append('csv', file);
+        
+        try {
+            const response = await fetch('http://localhost:3000/api/upload-csv', {
+                method: 'POST',
+                body: formData
+            });
+            
+            if (!response.ok) {
+                throw new Error('CSV upload failed');
+            }
+            
+            const data = await response.json();
+            setCsvUploadData(data);
+            setShowColumnSelector(true);
+        } catch (error) {
+            console.error('CSV upload error:', error);
+            alert('Failed to upload CSV file');
+        } finally {
+            setCsvUploading(false);
+            event.target.value = '';
+        }
+    };
+    
+    const handleColumnSelect = async (columnName) => {
+        if (!csvUploadData) return;
+        
+        try {
+            const response = await fetch(`http://localhost:3000/api/lead-lists/${csvUploadData.leadListId}/select-column`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ columnName })
+            });
+            
+            if (!response.ok) {
+                throw new Error('Column selection failed');
+            }
+            
+            const data = await response.json();
+            
+            // Load the lead list
+            const leadListResponse = await fetch(`http://localhost:3000/api/lead-lists/${csvUploadData.leadListId}/websites`);
+            const leadListData = await leadListResponse.json();
+            
+            setActiveLeadList(leadListData);
+            setShowColumnSelector(false);
+            setCsvUploadData(null);
+            
+            // Refresh lead lists
+            loadLeadLists();
+        } catch (error) {
+            console.error('Column selection error:', error);
+            alert('Failed to process column selection');
+        }
+    };
+    
+    const loadLeadLists = async () => {
+        try {
+            const response = await fetch('http://localhost:3000/api/lead-lists');
+            if (response.ok) {
+                const data = await response.json();
+                setLeadLists(data);
+            }
+        } catch (error) {
+            console.error('Failed to load lead lists:', error);
+        }
+    };
+    
+    const selectWebsiteFromLeadList = (leadWebsite) => {
+        const newWebsite = {
+            id: Date.now(),
+            url: leadWebsite.url,
+            duration: 30,
+            leadMetadata: leadWebsite.metadata
+        };
+        setWebsites([...websites, newWebsite]);
     };
 
     // Position button component
@@ -457,6 +553,78 @@ const App = () => {
                                 Add Website
                             </button>
                             
+                            {/* Lead List Import */}
+                            <div className="mt-4 pt-4 border-t border-gray-700/50">
+                                <div className="flex items-center justify-between mb-3">
+                                    <h3 className="text-sm font-medium text-gray-300">Import Lead List</h3>
+                                    <button
+                                        onClick={() => window.open('http://localhost:3000/api/sample-csv', '_blank')}
+                                        className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+                                    >
+                                        Download Sample CSV
+                                    </button>
+                                </div>
+                                
+                                <input
+                                    type="file"
+                                    ref={csvFileInputRef}
+                                    onChange={handleCSVUpload}
+                                    accept=".csv"
+                                    className="hidden"
+                                />
+                                
+                                <button
+                                    onClick={() => csvFileInputRef.current?.click()}
+                                    disabled={csvUploading}
+                                    className="w-full py-2 px-4 bg-green-600/20 hover:bg-green-600/30 border border-green-500/30 rounded-lg transition-colors text-sm font-medium text-green-300 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                                    </svg>
+                                    {csvUploading ? 'Uploading...' : 'Upload CSV'}
+                                </button>
+                                
+                                {/* Active Lead List */}
+                                {activeLeadList && (
+                                    <div className="mt-3 p-3 bg-green-600/10 border border-green-500/20 rounded-lg">
+                                        <div className="flex items-center justify-between mb-2">
+                                            <span className="text-xs font-medium text-green-300">Active Lead List</span>
+                                            <button
+                                                onClick={() => setActiveLeadList(null)}
+                                                className="text-xs text-gray-400 hover:text-white transition-colors"
+                                            >
+                                                Clear
+                                            </button>
+                                        </div>
+                                        <p className="text-sm text-gray-300">{activeLeadList.fileName}</p>
+                                        <p className="text-xs text-gray-500 mt-1">
+                                            {activeLeadList.totalCount} websites from {activeLeadList.selectedColumn}
+                                        </p>
+                                        
+                                        {/* Quick Add from Lead List */}
+                                        <select
+                                            onChange={(e) => {
+                                                if (e.target.value) {
+                                                    const website = activeLeadList.websites.find(w => w.url === e.target.value);
+                                                    if (website) {
+                                                        selectWebsiteFromLeadList(website);
+                                                        e.target.value = '';
+                                                    }
+                                                }
+                                            }}
+                                            className="mt-2 w-full px-2 py-1 bg-gray-900/50 border border-gray-700 rounded text-sm focus:border-green-500 focus:ring-1 focus:ring-green-500/20 transition-all outline-none"
+                                        >
+                                            <option value="">Select website to add...</option>
+                                            {activeLeadList.websites.map((website, index) => (
+                                                <option key={index} value={website.url}>
+                                                    {website.url}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                )}
+                            </div>
+                            
                             <div className="mt-4 pt-4 border-t border-gray-700/50">
                                 <div className="flex justify-between items-center">
                                     <span className="text-sm text-gray-400">Total Duration:</span>
@@ -651,7 +819,17 @@ const App = () => {
                                                             </span>
                                                         )}
                                                     </div>
-                                                    <p className="text-xs text-gray-500">{recording.duration}s • {recording.timestamp}</p>
+                                                    <p className="text-xs text-gray-500">
+                                                        {recording.duration}s • {recording.timestamp}
+                                                        {recording.hasLeadSource && (
+                                                            <span className="ml-2 text-green-400">
+                                                                <svg className="inline w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                                                </svg>
+                                                                Lead List
+                                                            </span>
+                                                        )}
+                                                    </p>
                                                 </div>
                                                 <div className="flex gap-1">
                                                     {/* Play button - use Cloudflare if ready */}
@@ -775,6 +953,73 @@ const App = () => {
                                 )}
                             </div>
                         </div>
+                    </div>
+                </div>
+            )}
+            
+            {/* Column Selector Modal */}
+            {showColumnSelector && csvUploadData && (
+                <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+                    <div className="bg-gray-900 rounded-2xl p-6 max-w-2xl w-full max-h-[80vh] overflow-y-auto">
+                        <h2 className="text-2xl font-bold mb-4">Select Website Column</h2>
+                        <p className="text-gray-400 mb-6">
+                            Choose which column contains the website URLs. We've analyzed your CSV and highlighted likely URL columns.
+                        </p>
+                        
+                        <div className="space-y-3">
+                            {csvUploadData.columnAnalysis.columns.map((column) => (
+                                <button
+                                    key={column.name}
+                                    onClick={() => handleColumnSelect(column.name)}
+                                    className={`w-full p-4 rounded-lg border transition-all text-left ${
+                                        column.likelyUrl
+                                            ? 'border-green-500/50 bg-green-600/10 hover:bg-green-600/20'
+                                            : 'border-gray-700 bg-gray-800/50 hover:bg-gray-800'
+                                    }`}
+                                >
+                                    <div className="flex items-start justify-between mb-2">
+                                        <h3 className="font-medium text-lg flex items-center gap-2">
+                                            {column.name}
+                                            {column.likelyUrl && (
+                                                <span className="text-xs bg-green-600/30 text-green-300 px-2 py-1 rounded">
+                                                    Likely URL
+                                                </span>
+                                            )}
+                                        </h3>
+                                        <span className="text-sm text-gray-400">
+                                            {column.fillRate}% filled
+                                        </span>
+                                    </div>
+                                    
+                                    <div className="space-y-1">
+                                        <p className="text-sm text-gray-500">Sample values:</p>
+                                        <div className="text-xs text-gray-400 font-mono space-y-0.5">
+                                            {column.samples.map((sample, idx) => (
+                                                <div key={idx} className="truncate">
+                                                    {sample}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                    
+                                    {csvUploadData.columnAnalysis.recommendedColumn === column.name && (
+                                        <div className="mt-2 text-xs text-green-400">
+                                            ✓ Recommended based on content analysis
+                                        </div>
+                                    )}
+                                </button>
+                            ))}
+                        </div>
+                        
+                        <button
+                            onClick={() => {
+                                setShowColumnSelector(false);
+                                setCsvUploadData(null);
+                            }}
+                            className="mt-6 w-full py-2 px-4 bg-gray-800 hover:bg-gray-700 rounded-lg transition-colors"
+                        >
+                            Cancel
+                        </button>
                     </div>
                 </div>
             )}
