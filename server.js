@@ -74,23 +74,23 @@ app.post('/api/upload-webcam', upload.single('video'), async (req, res) => {
 
 // Start recording endpoint
 app.post('/api/record', async (req, res) => {
-    const { url, duration, circleSize, position } = req.body;
+    const { websites, circleSize, position } = req.body;
 
-    if (!url) {
-        return res.status(400).json({ error: 'URL is required' });
+    if (!websites || !Array.isArray(websites) || websites.length === 0) {
+        return res.status(400).json({ error: 'At least one website is required' });
     }
 
     try {
         // Create a unique recording ID
         const recordingId = Date.now();
         
-        // Run the recording script with parameters
+        // Run the multi-site recording script with parameters
         const recordingProcess = spawn('node', [
-            'record-with-webcam.js',
-            '--url', url,
-            '--duration', duration || '30',
+            'record-multi-webcam.js',
+            '--websites', JSON.stringify(websites),
             '--size', circleSize || '200',
-            '--position', `${position?.x || 'bottom'}-${position?.y || 'right'}`
+            '--position', `${position?.x || 'bottom'}-${position?.y || 'right'}`,
+            '--recordingId', recordingId.toString()
         ], {
             cwd: __dirname
         });

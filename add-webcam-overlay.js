@@ -7,17 +7,49 @@ import { fileURLToPath } from 'url';
 // Set ffmpeg path
 ffmpeg.setFfmpegPath(ffmpegPath.path);
 
-// Configuration
-const CONFIG = {
+// Default configuration
+const DEFAULT_CONFIG = {
   webcamFile: 'sample.mp4',
   circleSize: 200,
   borderWidth: 2,
   borderColor: 'white',
   positionX: 20,
   positionY: 20, // from bottom
+  position: 'bottom-left'
 };
 
-async function addWebcamOverlay(inputVideo, outputVideo) {
+// Parse command line arguments
+function parseArgs() {
+  const args = process.argv.slice(3); // Skip node, script name, and input video
+  const config = { ...DEFAULT_CONFIG };
+  
+  for (let i = 0; i < args.length; i += 2) {
+    const key = args[i];
+    const value = args[i + 1];
+    
+    switch (key) {
+      case '--output':
+        config.output = value;
+        break;
+      case '--size':
+        config.circleSize = parseInt(value);
+        break;
+      case '--x':
+        config.positionX = parseInt(value);
+        break;
+      case '--y':
+        config.positionY = parseInt(value);
+        break;
+      case '--position':
+        config.position = value;
+        break;
+    }
+  }
+  
+  return config;
+}
+
+async function addWebcamOverlay(inputVideo, outputVideo, CONFIG = DEFAULT_CONFIG) {
   return new Promise((resolve, reject) => {
     const webcamPath = path.join(process.cwd(), CONFIG.webcamFile);
     
@@ -51,8 +83,26 @@ async function addWebcamOverlay(inputVideo, outputVideo) {
       `a='if(gt(pow(X-${radius},2)+pow(Y-${radius},2),pow(${radius},2)),0,` +
       `if(gt(pow(X-${radius},2)+pow(Y-${radius},2),pow(${radiusInner},2)),255*0.8,255))'[webcam_circle]`,
       
-      // Overlay webcam on main video
-      `[0:v][webcam_circle]overlay=${CONFIG.positionX}:H-${CONFIG.positionY + CONFIG.circleSize}:format=auto[final]`
+      // Overlay webcam on main video based on position
+      (() => {
+        const [posV, posH] = CONFIG.position.split('-');
+        let x = CONFIG.positionX;
+        let y = CONFIG.positionY;
+        
+        if (posH === 'right') {
+          x = `W-${CONFIG.circleSize + CONFIG.positionX}`;
+        } else {
+          x = CONFIG.positionX;
+        }
+        
+        if (posV === 'bottom') {
+          y = `H-${CONFIG.positionY + CONFIG.circleSize}`;
+        } else {
+          y = CONFIG.positionY;
+        }
+        
+        return `[0:v][webcam_circle]overlay=${x}:${y}:format=auto[final]`;
+      })()
     ].join(';');
     
     let duration = 0;
@@ -146,13 +196,20 @@ async function main() {
     let inputVideo;
     let outputVideo;
     
+    // Parse command line arguments
+    const CONFIG = parseArgs();
+    
     // Check if a specific file was provided as argument
     if (process.argv[2]) {
       inputVideo = process.argv[2];
-      // Generate output filename
-      const inputDir = path.dirname(inputVideo);
-      const inputName = path.basename(inputVideo, '.mp4');
-      outputVideo = path.join(inputDir, `final-${inputName.replace('combined-', '')}.mp4`);
+      // Use provided output or generate filename
+      if (CONFIG.output) {
+        outputVideo = CONFIG.output;
+      } else {
+        const inputDir = path.dirname(inputVideo);
+        const inputName = path.basename(inputVideo, '.mp4');
+        outputVideo = path.join(inputDir, `final-${inputName.replace('combined-', '').replace('concatenated-', '')}.mp4`);
+      }
     } else {
       // Find the latest recording
       console.log('🔍 Finding latest recording...');
@@ -163,7 +220,7 @@ async function main() {
     
     // Start processing
     const startTime = Date.now();
-    await addWebcamOverlay(inputVideo, outputVideo);
+    await addWebcamOverlay(inputVideo, outputVideo, CONFIG);
     const processingTime = ((Date.now() - startTime) / 1000).toFixed(1);
     
     // Verify output
@@ -191,4 +248,4 @@ if (__filename === process.argv[1]) {
   main().catch(console.error);
 }
 
-export { addWebcamOverlay, CONFIG };
+export { addWebcamOverlay, DEFAULT_CONFIG as CONFIG };

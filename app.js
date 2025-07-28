@@ -3,8 +3,9 @@ const { useState, useRef, useEffect } = React;
 const App = () => {
     // State management
     const [webcamVideo, setWebcamVideo] = useState(null);
-    const [targetUrl, setTargetUrl] = useState('https://webtrixdigital.com');
-    const [duration, setDuration] = useState(30);
+    const [websites, setWebsites] = useState([
+        { id: Date.now(), url: 'https://webtrixdigital.com', duration: 30 }
+    ]);
     const [circleSize, setCircleSize] = useState(200);
     const [overlayPosition, setOverlayPosition] = useState({ x: 'bottom', y: 'right' });
     const [isRecording, setIsRecording] = useState(false);
@@ -89,6 +90,13 @@ const App = () => {
 
     // Start recording
     const startRecording = async () => {
+        // Validate websites
+        const validWebsites = websites.filter(w => w.url && w.url.startsWith('http'));
+        if (validWebsites.length === 0) {
+            alert('Please add at least one valid website URL');
+            return;
+        }
+
         setIsRecording(true);
         setProgress(0);
         setRecordingStatus('Initializing recording...');
@@ -101,8 +109,7 @@ const App = () => {
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
-                    url: targetUrl,
-                    duration: duration,
+                    websites: validWebsites,
                     circleSize: circleSize,
                     position: overlayPosition
                 })
@@ -112,30 +119,49 @@ const App = () => {
                 throw new Error('Recording failed');
             }
 
-            // Simulate progress updates (in production, use WebSocket or SSE)
-            const steps = [
-                { status: 'Connecting to browser...', progress: 10 },
-                { status: 'Loading target URL...', progress: 20 },
-                { status: 'Starting screen capture...', progress: 30 },
-                { status: 'Recording in progress...', progress: 50 },
-                { status: 'Processing video...', progress: 80 },
-                { status: 'Finalizing...', progress: 95 },
-                { status: 'Complete!', progress: 100 }
-            ];
-
-            for (const step of steps) {
-                setRecordingStatus(step.status);
-                setProgress(step.progress);
-                await new Promise(resolve => setTimeout(resolve, duration * 1000 / steps.length));
+            // Calculate total duration
+            const totalDuration = validWebsites.reduce((sum, w) => sum + w.duration, 0);
+            
+            // Simulate progress updates for each website
+            let currentProgress = 0;
+            for (let i = 0; i < validWebsites.length; i++) {
+                const website = validWebsites[i];
+                const websiteProgressStart = currentProgress;
+                const websiteProgressEnd = ((i + 1) / validWebsites.length) * 80; // 80% for recording
+                
+                setRecordingStatus(`Recording website ${i + 1}/${validWebsites.length}: ${new URL(website.url).hostname}`);
+                
+                // Simulate progress for this website
+                const steps = 5;
+                for (let step = 0; step < steps; step++) {
+                    const stepProgress = websiteProgressStart + ((websiteProgressEnd - websiteProgressStart) * (step / steps));
+                    setProgress(Math.round(stepProgress));
+                    await new Promise(resolve => setTimeout(resolve, (website.duration * 1000) / steps));
+                }
+                
+                currentProgress = websiteProgressEnd;
             }
+            
+            // Processing phase
+            setRecordingStatus('Processing and adding webcam overlay...');
+            setProgress(85);
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            
+            setRecordingStatus('Finalizing video...');
+            setProgress(95);
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            setRecordingStatus('Complete!');
+            setProgress(100);
+            await new Promise(resolve => setTimeout(resolve, 500));
 
             const result = await response.json();
             
             // Add recording to list
             const newRecording = {
                 id: result.recordingId,
-                url: targetUrl,
-                duration: duration,
+                url: `${validWebsites.length} websites`,
+                duration: totalDuration,
                 timestamp: new Date().toLocaleString(),
                 videoUrl: result.videoUrl
             };
@@ -274,21 +300,120 @@ const App = () => {
                             )}
                         </div>
 
-                        {/* URL Input */}
+                        {/* Website List */}
                         <div className="glass rounded-2xl p-6 fade-in">
                             <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
                                 <svg className="w-6 h-6 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
                                 </svg>
-                                Target URL
+                                Target Websites
                             </h2>
-                            <input
-                                type="url"
-                                value={targetUrl}
-                                onChange={(e) => setTargetUrl(e.target.value)}
-                                placeholder="https://example.com"
-                                className="w-full px-4 py-3 bg-gray-800/50 border border-gray-700 rounded-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 transition-all outline-none"
-                            />
+                            
+                            <div className="space-y-3 mb-4">
+                                {websites.map((website, index) => (
+                                    <div key={website.id} className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
+                                        <div className="flex items-start gap-3">
+                                            <div className="flex-1 space-y-3">
+                                                <input
+                                                    type="url"
+                                                    value={website.url}
+                                                    onChange={(e) => {
+                                                        const updated = [...websites];
+                                                        updated[index].url = e.target.value;
+                                                        setWebsites(updated);
+                                                    }}
+                                                    placeholder="https://example.com"
+                                                    className="w-full px-3 py-2 bg-gray-900/50 border border-gray-700 rounded-lg focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/20 transition-all outline-none text-sm"
+                                                />
+                                                <div>
+                                                    <div className="flex justify-between items-center mb-1">
+                                                        <label className="text-xs font-medium text-gray-400">Duration</label>
+                                                        <span className="text-xs text-indigo-400 font-mono">{website.duration}s</span>
+                                                    </div>
+                                                    <input
+                                                        type="range"
+                                                        min="5"
+                                                        max="60"
+                                                        value={website.duration}
+                                                        onChange={(e) => {
+                                                            const updated = [...websites];
+                                                            updated[index].duration = parseInt(e.target.value);
+                                                            setWebsites(updated);
+                                                        }}
+                                                        className="w-full h-1"
+                                                    />
+                                                </div>
+                                            </div>
+                                            <div className="flex flex-col gap-1">
+                                                <button
+                                                    onClick={() => {
+                                                        if (index > 0) {
+                                                            const updated = [...websites];
+                                                            [updated[index], updated[index - 1]] = [updated[index - 1], updated[index]];
+                                                            setWebsites(updated);
+                                                        }
+                                                    }}
+                                                    disabled={index === 0}
+                                                    className="p-1.5 text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                                                >
+                                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 15l7-7 7 7" />
+                                                    </svg>
+                                                </button>
+                                                <button
+                                                    onClick={() => {
+                                                        if (index < websites.length - 1) {
+                                                            const updated = [...websites];
+                                                            [updated[index], updated[index + 1]] = [updated[index + 1], updated[index]];
+                                                            setWebsites(updated);
+                                                        }
+                                                    }}
+                                                    disabled={index === websites.length - 1}
+                                                    className="p-1.5 text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                                                >
+                                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+                                                    </svg>
+                                                </button>
+                                                <button
+                                                    onClick={() => {
+                                                        if (websites.length > 1) {
+                                                            setWebsites(websites.filter(w => w.id !== website.id));
+                                                        }
+                                                    }}
+                                                    disabled={websites.length === 1}
+                                                    className="p-1.5 text-gray-400 hover:text-red-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors mt-1"
+                                                >
+                                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                                                    </svg>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                            
+                            <button
+                                onClick={() => {
+                                    setWebsites([...websites, { id: Date.now(), url: '', duration: 30 }]);
+                                }}
+                                className="w-full py-2 px-4 bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/30 rounded-lg transition-colors text-sm font-medium text-indigo-300 flex items-center justify-center gap-2"
+                            >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4" />
+                                </svg>
+                                Add Website
+                            </button>
+                            
+                            <div className="mt-4 pt-4 border-t border-gray-700/50">
+                                <div className="flex justify-between items-center">
+                                    <span className="text-sm text-gray-400">Total Duration:</span>
+                                    <span className="text-sm font-medium text-indigo-400">
+                                        {websites.reduce((sum, w) => sum + w.duration, 0)}s
+                                    </span>
+                                </div>
+                            </div>
                         </div>
 
                         {/* Recording Settings */}
@@ -301,26 +426,6 @@ const App = () => {
                             </h2>
 
                             <div className="space-y-6">
-                                {/* Duration Slider */}
-                                <div>
-                                    <div className="flex justify-between items-center mb-2">
-                                        <label className="text-sm font-medium text-gray-300">Duration</label>
-                                        <span className="text-sm text-indigo-400 font-mono">{duration}s</span>
-                                    </div>
-                                    <input
-                                        type="range"
-                                        min="5"
-                                        max="60"
-                                        value={duration}
-                                        onChange={(e) => setDuration(parseInt(e.target.value))}
-                                        className="w-full"
-                                    />
-                                    <div className="flex justify-between text-xs text-gray-600 mt-1">
-                                        <span>5s</span>
-                                        <span>60s</span>
-                                    </div>
-                                </div>
-
                                 {/* Circle Size */}
                                 <div>
                                     <div className="flex justify-between items-center mb-2">
