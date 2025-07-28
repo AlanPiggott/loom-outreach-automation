@@ -17,6 +17,9 @@ recordings/
 *.mp4
 screenshot*.png
 
+# Upload directory
+uploads/
+
 # Logs
 *.log
 npm-debug.log*
